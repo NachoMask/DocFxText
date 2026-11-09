@@ -1,0 +1,13 @@
+apiRules:
+- exclude:
+    uidRegex: '^(Global\.)?PlayerInput$'
+    type: Type
+- include:
+    uidRegex: ^DocFxForUnity
+    type: Namespace
+- include:
+    uidRegex: ^Global
+    type: Namespace
+- exclude:
+    uidRegex: .*
+    type: Namespace

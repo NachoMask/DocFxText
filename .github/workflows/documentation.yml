@@ -1,0 +1,158 @@
+name: DocFxTest documentation
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+  actions: read
+
+jobs:
+  # Build the documentation
+  build:
+    name: build (docfx ${{ matrix.docfx }}, Unity ${{ matrix.unity }})
+    # Fork pull requests do not receive the Unity license secrets.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest # DocFX v2+ is cross-platform; no longer requires Windows
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { docfx: 2.81.0, unity: 6000.0.78f1, deploy: true }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        # with:
+        #   submodules: true
+
+      - name: Check Unity activation settings
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_SERIAL: ${{ secrets.UNITY_SERIAL }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        run: |
+          if [[ -z "$UNITY_EMAIL" || -z "$UNITY_PASSWORD" || ( -z "$UNITY_LICENSE" && -z "$UNITY_SERIAL" ) ]]; then
+            echo "::error::Configure UNITY_EMAIL, UNITY_PASSWORD, and either UNITY_LICENSE (Personal) or UNITY_SERIAL (Pro) in repository Actions secrets."
+            exit 1
+          fi
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Install DocFX
+        run: dotnet tool install -g docfx --version ${{ matrix.docfx }}
+
+      - name: Cache Unity managed DLLs
+        id: cache-unity-dlls
+        uses: actions/cache@v6
+        with:
+          path: lib/UnityEngine
+          key: unity-managed-dlls-${{ matrix.unity }}-v1
+
+      - name: Extract Unity managed DLLs from game-ci image
+        if: steps.cache-unity-dlls.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p lib
+          docker create --name unity-editor unityci/editor:ubuntu-${{ matrix.unity }}-linux-il2cpp-3.2.2
+          docker cp unity-editor:/opt/unity/Editor/Data/Managed/UnityEngine lib/
+          docker rm unity-editor
+
+      - name: Cache Unity Library
+        uses: actions/cache@v6
+        with:
+          path: Library
+          key: unity-library-${{ runner.os }}-${{ matrix.unity }}-StandaloneLinux64-${{ hashFiles('Assets/**', 'Packages/**', 'ProjectSettings/**', '.github/unity/**') }}
+          restore-keys: |
+            unity-library-${{ runner.os }}-${{ matrix.unity }}-StandaloneLinux64-
+
+      # Keep the CI entry point outside Assets in the repository.
+      - name: Prepare Unity documentation entry point
+        run: |
+          mkdir -p Assets/Editor/DocumentationCI
+          cp .github/unity/DocumentationBuild.cs Assets/Editor/DocumentationCI/DocumentationBuild.cs
+
+      - name: Restore packages and compile Unity scripts
+        uses: game-ci/unity-builder@v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_SERIAL: ${{ secrets.UNITY_SERIAL }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          unityVersion: ${{ matrix.unity }}
+          customImage: unityci/editor:ubuntu-${{ matrix.unity }}-linux-il2cpp-3.2.2
+          targetPlatform: StandaloneLinux64
+          buildMethod: DocFxTest.CI.DocumentationBuild.Prepare
+          versioning: None
+          # The DLL extraction and entry-point copy intentionally create files.
+          allowDirtyBuild: true
+
+      - name: Verify documentation references
+        run: |
+          for assembly in lib/UnityEngine/UnityEngine.CoreModule.dll Library/ScriptAssemblies/Unity.InputSystem.dll Library/ScriptAssemblies/Assembly-CSharp.dll; do
+            if [[ ! -s "$assembly" ]]; then
+              echo "::error::Unity did not prepare the required assembly: $assembly"
+              exit 1
+            fi
+          done
+          # DocFX includes Assets/**/*.cs; remove the generated CI entry point first.
+          rm Assets/Editor/DocumentationCI/DocumentationBuild.cs
+
+      - name: Use the Unity xref map of the tested version
+        run: |
+          unity='${{ matrix.unity }}'
+          sed -i "s#UnityXrefMaps/[0-9.]*/#UnityXrefMaps/${unity%.*}/#" Documentation/docfx.json
+
+      - name: Prepare documentation index
+        run: |
+          if [[ -f README.md ]]; then
+            cp README.md Documentation/index.md
+          elif [[ ! -f Documentation/index.md ]]; then
+            echo "::error::Provide README.md or Documentation/index.md."
+            exit 1
+          fi
+
+      - name: Build
+        run: docfx Documentation/docfx.json --warningsAsErrors
+
+      # A build can succeed without resolving Unity types: check the generated links
+      - name: Check Unity API links
+        run: |
+          unity='${{ matrix.unity }}'
+          page=_site/api/Global.PlayerMotor.html
+          for type in Object Component Behaviour MonoBehaviour Vector2; do
+            grep -q "href=\"https://docs.unity3d.com/${unity%.*}/Documentation/ScriptReference/$type.html\"" $page \
+              || { echo "::error::Missing link to Unity $type in $page"; exit 1; }
+          done
+
+      # Upload the generated documentation (only on main for deployment)
+      - name: Upload site artifact
+        if: matrix.deploy && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site # Must equal the 'build.dest' value in docfx.json
+
+  # Deploy the generated documentation to GitHub Pages
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
