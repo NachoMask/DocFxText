@@ -105,3 +105,9 @@ InitTestScene*.unity*
 
 # Auto-generated cache in Assets folder
 /[Aa]ssets/[Ss]ceneDependencyCache*
+
+# docfx
+_site/
+Documentation/api/
+Documentation/bin/
+Documentation/obj/

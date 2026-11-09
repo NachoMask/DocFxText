@@ -131,7 +131,7 @@ jobs:
       - name: Check Unity API links
         run: |
           unity='${{ matrix.unity }}'
-          page=_site/api/Global.PlayerMotor.html
+          page=_site/api/DocFxTest.PlayerMotor.html
           for type in Object Component Behaviour MonoBehaviour Vector2; do
             grep -q "href=\"https://docs.unity3d.com/${unity%.*}/Documentation/ScriptReference/$type.html\"" $page \
               || { echo "::error::Missing link to Unity $type in $page"; exit 1; }

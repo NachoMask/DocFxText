@@ -3,7 +3,7 @@ apiRules:
     uidRegex: '^(Global\.)?PlayerInput$'
     type: Type
 - include:
-    uidRegex: ^DocFxForUnity
+    uidRegex: ^DocFxTest
     type: Namespace
 - include:
     uidRegex: ^Global
